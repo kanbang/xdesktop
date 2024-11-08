@@ -10,6 +10,12 @@ python = "^3.10"
 werkzeug = "^3.1.2"
 fs = "^2.4.16"
 pathvalidate = "^3.2.1"
+fastapi = "^0.115.4"
+uvicorn = "^0.32.0"
+python-jose = "^3.3.0"
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+sqlalchemy = "^2.0.36"
+python-multipart = "^0.0.17"
 
 
 [build-system]

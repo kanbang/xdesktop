@@ -1,6 +1,6 @@
 <template>
   <div class="h-100vh w-100vw">
-    <vue-finder id='explorer' class="h-100vh w-full" :request="request" max-height="100%" theme="light"
+    <vue-finder id='explorer' class="h-100vh w-full" :request="request" max-height="100%" theme="dark"
       :features="features" locale="zhCN" persist ></vue-finder>
   </div>
 </template>

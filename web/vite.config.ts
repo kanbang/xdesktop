@@ -20,4 +20,15 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url))
     },
   },
+  server: {
+    proxy: {
+      '/cloud_api/': {
+        target: 'http://localhost:8005/', // 你的后端服务器地址
+        secure: false,
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/cloud_api/, ''),
+     
+      },
+    },
+  },
 })

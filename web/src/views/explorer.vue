@@ -1,12 +1,13 @@
 <template>
   <div class="h-100vh w-100vw">
     <vue-finder id='explorer' class="h-100vh w-full" :request="request" max-height="100%" theme="dark"
-      :features="features" locale="zhCN" persist ></vue-finder>
+      :features="features" locale="zhCN" persist></vue-finder>
   </div>
 </template>
 
 <script setup>
-import { inject } from 'vue'
+
+import { useAuthStore } from '@/store/auth'
 
 import { FEATURES, FEATURE_ALL_NAMES } from 'vuefinder/dist/features.js';
 
@@ -17,10 +18,13 @@ const features = [
   //FEATURES.LANGUAGE,
 ]
 
-const authToken = inject('authToken') // 获取提供的 token
+const authStore = useAuthStore() // 使用 useAuthStore 获取 authStore 实例
+const authToken = authStore.token // 获取 token
+const username = authStore.username // 获取 username
 
 const request = {
-  baseUrl: "http://127.0.0.1:8005",
+  // baseUrl: "cloud_api/cloud",
+  baseUrl: `http://127.0.0.1:8005/cloud/${username}`,
   headers: {
     "X-ADDITIONAL-HEADER": 'yes',
     "Authorization": `Bearer ${authToken}` // 使用 token

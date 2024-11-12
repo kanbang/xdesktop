@@ -20,20 +20,43 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, provide } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
+import qs from 'qs';
+import axiosInstance from '@/utils/axiosInstance'
+import { useAuthStore } from '@/store/auth';
+import Swal from 'sweetalert2';
 
 const username = ref('')
 const password = ref('')
 const router = useRouter()
-const token = ref('')
 
 const handleLogin = async () => {
-  // 这里可以添加实际的登录逻辑，比如调用 API
-  // 假设登录成功后，获取 token
-  token.value = 'your-token-here'
-  provide('authToken', token.value)
-  router.push('/explorer')
+  try {
+    const response = await axiosInstance.post('/auth/token',
+      qs.stringify({
+        username: username.value,
+        password: password.value
+      })
+    )
+
+    if (response.status !== 200) {
+      throw new Error('登录失败，请检查您的用户名和密码。')
+    }
+
+    const data = response.data
+    const authStore = useAuthStore() // 获取 authStore 实例
+    authStore.setToken(data.access_token) // 更新 token
+    authStore.setUsername(username.value) // 保存用户名
+    router.push('/explorer')
+  } catch (error) {
+    Swal.fire({
+      icon: 'error',
+      title: '登录失败',
+      text: error.response?.data?.detail || error.message,
+      confirmButtonText: '确定'
+    });
+  }
 }
 
 // 动态特逻辑

@@ -14,7 +14,7 @@ from collections import OrderedDict
 from pathvalidate import is_valid_filename
 import io
 
-from utils.vuefinder import Adapter, to_vuefinder_resource
+from vuefinder import Adapter, to_vuefinder_resource
 
 
 def fill_fs(fs: FS, d: dict):

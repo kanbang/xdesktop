@@ -16,7 +16,7 @@ async def dispatch_request(request: Request, username: str):
         return JSONResponse(headers=headers)
 
     q = request.query_params.get("q")
-    if q != "preview":
+    if q not in ["preview", "download"]:
         # 验证用户
         token = await oauth2_scheme(request)
         user = await get_current_user(request)

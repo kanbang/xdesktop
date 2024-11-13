@@ -23,8 +23,10 @@ const authToken = authStore.token // 获取 token
 const username = authStore.username // 获取 username
 
 const request = {
-  // baseUrl: "cloud_api/cloud",
-  baseUrl: `http://127.0.0.1:8005/cloud/${username}`,
+  // baseUrl: "cloud_api/",
+  baseUrl: `cloud_api/cloud/${username}`,
+  // baseUrl: `http://127.0.0.1:8005/cloud/${username}`,
+  // baseUrl: `http://127.0.0.1:8005`,
   headers: {
     "X-ADDITIONAL-HEADER": 'yes',
     "Authorization": `Bearer ${authToken}` // 使用 token

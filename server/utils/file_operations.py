@@ -1,5 +1,5 @@
 from fastapi import Request, HTTPException, Body
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from starlette.datastructures import UploadFile
 from fs.osfs import OSFS
 from fs import path as fspath, errors, copy, walk
@@ -12,14 +12,8 @@ from pathvalidate import is_valid_filename
 from utils.auth import get_current_user
 from utils.vuefinder import Adapter, to_vuefinder_resource
 from pydantic import BaseModel
-import urllib.parse
-
-
-# Define RequestContext data class
-class RequestContext:
-    def __init__(self, request, username):
-        self.request = request
-        self.username = username
+from urllib.parse import quote
+from PIL import Image
 
 # 全局字典存储用户适配器
 user_adapters = {}
@@ -33,30 +27,50 @@ def get_user_adapters(username: str):
         }
     return user_adapters[username]
 
-async def get_adapter(context: RequestContext) -> Adapter:
-    key = context.request.query_params.get("adapter", "")
-    user_adapters = get_user_adapters(context.username)
-    if key not in user_adapters:
-        key, value = next(iter(user_adapters.items()))
-        return Adapter(key, value)
-    return Adapter(key, user_adapters[key])
 
-async def get_adapter_keys(context: RequestContext) -> List[str]:
-    user_adapters = get_user_adapters(context.username)
-    return list(user_adapters.keys())
-
-async def get_full_path(context: RequestContext, adapter: Adapter) -> str:
-    return context.request.query_params.get("path", adapter.key + "://")
-
-def fs_path(path: str) -> str:
+def _fs_path(path: str) -> str:
     if ":/" in path:
         return fspath.abspath(path.split(":/")[1])
     return fspath.abspath(path)
 
+def __move(fs, src, dst):
+    src = _fs_path(src)
+    dst = _fs_path(dst)
+    if fs.isdir(src):
+        fs.movedir(src, dst, create=True)
+    else:
+        fs.move(src, dst)
+# Define RequestContext data class
+class RequestContext:
+    def __init__(self, request, username):
+        self.request = request
+        self.username = username
+    
+    async def get_storages(self) -> List[str]:
+        user_adapters = get_user_adapters(self.username)
+        return list(user_adapters.keys())
+    
+    async def get_adapter(self) -> Adapter:
+        key = self.request.query_params.get("adapter", "")
+        user_adapters = get_user_adapters(self.username)
+        if key not in user_adapters:
+            key, value = next(iter(user_adapters.items()))
+            return Adapter(key, value)
+        return Adapter(key, user_adapters[key])
+
+    async def get_full_path(self, adapter: Adapter) -> str:
+        return self.request.query_params.get("path", adapter.key + "://")
+    
+    async def delegate(self) -> tuple[FS, str]:
+        adapter = await self.get_adapter()
+        full_path = await self.get_full_path(adapter)
+        fs, path = adapter.fs, _fs_path(full_path)
+        return fs, path 
+
+
+
 async def index(context: RequestContext, filter: str = None):
-    adapter = await get_adapter(context)
-    full_path = await get_full_path(context, adapter)
-    fs, path = adapter.fs, fs_path(full_path)
+    fs, path = await context.delegate()
     infos = list(fs.scandir(path, namespaces=["basic", "details"]))
 
     if filter:
@@ -64,11 +78,12 @@ async def index(context: RequestContext, filter: str = None):
 
     infos.sort(key=lambda i: ("0_" if i.is_dir else "1_") + i.name.lower())
 
+    adapter = await context.get_adapter()
     return JSONResponse(
         {
             "adapter": adapter.key,
-            "storages": await get_adapter_keys(context),
-            "dirname": await get_full_path(context, adapter),
+            "storages": await context.get_storages(),
+            "dirname": await context.get_full_path(adapter),
             "files": [
                 to_vuefinder_resource(adapter.key, path, info) for info in infos
             ],
@@ -76,12 +91,11 @@ async def index(context: RequestContext, filter: str = None):
     )
 
 async def download(context: RequestContext):
-    adapter = await get_adapter(context)
-    fs, path = adapter.fs, fs_path(await get_full_path(context, adapter))
+    fs, path = await context.delegate()
     info = fs.getinfo(path, ["basic", "details"])
 
     headers = {
-        "Content-Disposition": f'attachment; filename="{info.name}"',
+        "Content-Disposition": f'attachment; filename="{quote(info.name)}"',
     }
     if info.size is not None:
         headers["Content-Length"] = str(info.size)
@@ -93,26 +107,50 @@ async def download(context: RequestContext):
     )
 
 async def preview(context: RequestContext):
-    adapter = await get_adapter(context)
-    fs, path = adapter.fs, fs_path(await get_full_path(context, adapter))
+    fs, path = await context.delegate()
     info = fs.getinfo(path, ["basic", "details"])
 
     headers = {
-        "Content-Disposition": f'inline; filename="{urllib.parse.quote(info.name)}"',
+        "Content-Disposition": f'inline; filename="{quote(info.name)}"',
     }
-    if info.size is not None:
-        headers["Content-Length"] = str(info.size)
+
+    # if info.size is not None:
+    #     headers["Content-Length"] = str(info.size)
+
+    # def iterfile():
+    #     with fs.open(path, "rb") as file_like:
+    #         yield from file_like
+
+    # return StreamingResponse(
+    #     iterfile(),
+    #     media_type=mimetypes.guess_type(info.name)[0] or "application/octet-stream",
+    #     headers=headers,
+    # )
+
+     # 打开图像并生成缩略图
+    with fs.open(path, "rb") as file_like:
+        image = Image.open(file_like)
+        image.thumbnail((128, 128))  # 生成 128x128 的缩略图
+
+        # 将图像保存到字节流中
+        img_byte_arr = io.BytesIO()
+        image.save(img_byte_arr, format="PNG")
+        img_byte_arr.seek(0)
+
+    # 使用字节流的大小设置 Content-Length
+    headers["Content-Length"] = str(len(img_byte_arr.getvalue()))
 
     return StreamingResponse(
-        fs.open(path, "rb"),
-        media_type=mimetypes.guess_type(info.name)[0] or "application/octet-stream",
+        img_byte_arr,
+        media_type="image/png",
         headers=headers,
     )
+    
 
 async def subfolders(context: RequestContext):
-    adapter = await get_adapter(context)
-    fs, path = adapter.fs, fs_path(await get_full_path(context, adapter))
+    fs, path = await context.delegate()
     infos = fs.scandir(path, namespaces=["basic", "details"])
+    adapter = await context.get_adapter()
     return JSONResponse(
         {
             "folders": [
@@ -123,14 +161,12 @@ async def subfolders(context: RequestContext):
         }
     )
 
-async def search(context: RequestContext, filter: str = None):
+async def search(context: RequestContext):
+    filter = context.request.query_params.get("filter", None)
     return await index(context, filter)
 
 async def newfolder(context: RequestContext):
-    adapter = await get_adapter(context)
-    full_path = await get_full_path(context, adapter)
-    fs, path = adapter.fs, fs_path(full_path)
-    
+    fs, path = await context.delegate()
     data = await context.request.json()
     name = data.get("name", "")
     
@@ -138,52 +174,36 @@ async def newfolder(context: RequestContext):
     return await index(context)
 
 async def newfile(context: RequestContext):
-    adapter = await get_adapter(context)
-    full_path = await get_full_path(context, adapter)
-    fs, path = adapter.fs, fs_path(full_path)
+    fs, path = await context.delegate()
     data = await context.request.json()
     name = data.get("name", "")
 
     fs.writetext(fspath.join(path, name), "")
     return await index(context)
 
+
 async def rename(context: RequestContext):
-    adapter = await get_adapter(context)
-    fs, path = adapter.fs, fs_path(await get_full_path(context, adapter))
+    fs, path = await context.delegate()
     data = await context.request.json()
-    src = fs_path(data.get("item", ""))
+    src = data.get("item", "")
     dst = fspath.join(path, data.get("name", ""))
-    
-    try:
-        if fs.isdir(src):
-            fs.movedir(src, dst, create=True)
-        else:
-            fs.move(src, dst)
-    except Exception as e   :
-        return JSONResponse({"message": str(e), "status": False}, status_code=404)
-    
+    __move(fs, src, dst)
     return await index(context)
 
-async def move(context: RequestContext, items: List[Dict] = Body(...), item: str = Body(...)):
-    adapter = await get_adapter(context)
-    fs, _ = adapter.fs, fs_path(await get_full_path(context, adapter))
-    dst_dir = item
-    for item in items:
+async def move(context: RequestContext):
+    fs, _ = await context.delegate()
+    data = await context.request.json()
+    dst_dir = data.get("item", "")
+    for item in data.get("items", []):
         src = item["path"]
-        src_path = fs_path(src)
-        dst_path = fspath.combine(dst_dir, fspath.basename(src))
-        if fs.isdir(src_path):
-            fs.movedir(src_path, dst_path, create=True)
-        else:
-            fs.move(src_path, dst_path)
+        __move(fs, src, fspath.combine(dst_dir, fspath.basename(src)))
     return await index(context)
 
 async def delete(context: RequestContext):
-    adapter = await get_adapter(context)
-    fs, path = adapter.fs, fs_path(await get_full_path(context, adapter))
+    fs, path = await context.delegate()
     data = await context.request.json()
     for item in data.get("items", []):
-        item_path = fs_path(item["path"])
+        item_path = _fs_path(item["path"])
         if fs.isdir(item_path):
             fs.removetree(item_path)
         else:
@@ -191,10 +211,7 @@ async def delete(context: RequestContext):
     return await index(context)
 
 async def upload(context: RequestContext):
-    adapter = await get_adapter(context)
-    full_path = await get_full_path(context, adapter)
-    fs, path = adapter.fs, fs_path(full_path)
-    
+    fs, path = await context.delegate()
     form = await context.request.form()
     
     for key, fsrc in form.items():
@@ -228,12 +245,11 @@ def _get_filename(payload: dict, param: str = "name", ext: str = "") -> str:
     return name
 
 async def archive(context: RequestContext):
-    adapter = await get_adapter(context)
-    fs, path = adapter.fs, fs_path(await get_full_path(context, adapter))
+    fs, path = await context.delegate()
     data = await context.request.json()
     name = _get_filename(data, ext=".zip")
     items: list[dict] = data.get("items", [])
-    paths = [fs_path(item["path"]) for item in items if "path" in item]
+    paths = [_fs_path(item["path"]) for item in items if "path" in item]
     archive_path = fspath.join(path, name)
 
     if fs.exists(archive_path):
@@ -247,10 +263,9 @@ async def archive(context: RequestContext):
 
 async def download_archive(context: RequestContext):
     name = _get_filename(await context.request.json(), ext=".zip")  
-    adapter = await get_adapter(context)
-    fs, path = adapter.fs, fs_path(await get_full_path(context, adapter))
+    fs, path = await context.delegate()
     data = await context.request.json()
-    paths = [fs_path(p) for p in data.get("items", []) if "path" in p]
+    paths = [_fs_path(p) for p in data.get("items", []) if "path" in p]
 
     stream = io.BytesIO()
 
@@ -261,16 +276,15 @@ async def download_archive(context: RequestContext):
         stream.getvalue(),
         media_type="application/octet-stream",
         headers={
-            "Content-Disposition": f'attachment; filename="{name}"',
+            "Content-Disposition": f'attachment; filename="{urllib.parse.quote(name)}"',
             "Content-Type": "application/zip",
         },
     )
 
 async def unarchive(context: RequestContext):
-    adapter = await get_adapter(context)
-    fs, path = adapter.fs, fs_path(await get_full_path(context, adapter))
+    fs, path = await context.delegate()
     data = await context.request.json()
-    archive_path = fs_path(data.get("item", ""))
+    archive_path = _fs_path(data.get("item", ""))
 
     with fs.openbin(archive_path) as zip_file:
         with ZipFS(zip_file) as zip:
@@ -285,8 +299,7 @@ async def unarchive(context: RequestContext):
     return await index(context)
 
 async def save(context: RequestContext):
-    adapter = await get_adapter(context)
-    fs, path = adapter.fs, fs_path(await get_full_path(context, adapter))
+    fs, path = await context.delegate()
     data = await context.request.json()
     content = data.get("content", "")
     with fs.open(path, "w") as f:
